@@ -1,269 +1,91 @@
 import os
-import sys
 import json
-import subprocess
 
-# Dependency check for curses (windows-curses on Windows)
-try:
-    import curses
-except ImportError:
-    print("The 'curses' library is required but not installed.")
-    answer = input("Install 'windows-curses' now? (y/n): ").strip().lower()
-    if answer == 'y':
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "windows-curses"])
-        print("Please restart the script after installation.")
-    else:
-        print("Cannot continue without 'curses'. Exiting.")
-    sys.exit(1)
-
-#CHANGE TO YOUR WORLDS DIRECTORY!
-
-WORLDS_DIR = "./worlds"  # Change this path to your Minecraft worlds folder
 BEHAVIOR_PACKS_JSON = "world_behavior_packs.json"
 RESOURCE_PACKS_JSON = "world_resource_packs.json"
 
-
-def list_worlds():
-    if not os.path.isdir(WORLDS_DIR):
-        print(f"Worlds directory not found: {WORLDS_DIR}")
-        sys.exit(1)
-    return [d for d in os.listdir(WORLDS_DIR) if os.path.isdir(os.path.join(WORLDS_DIR, d))]
-
+def is_excluded_pack(folder_name):
+    exclude_keywords = ['vanilla', 'experimental']
+    return any(keyword in folder_name.lower() for keyword in exclude_keywords)
 
 def load_packs_json(world_path, filename):
-    path = os.path.join(world_path, filename)
-    if os.path.exists(path):
-        with open(path, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    return []
+    json_path = os.path.join(world_path, filename)
+    if not os.path.isfile(json_path):
+        return []
+    with open(json_path, 'r', encoding='utf-8') as f:
+        return json.load(f)
 
-
-def save_packs_json(world_path, filename, data):
-    path = os.path.join(world_path, filename)
-    with open(path, 'w', encoding='utf-8') as f:
-        json.dump(data, f, indent=2)
-
-
-def get_mod_manifest_path(uuid, world_path):
-    # Heuristic: try to find mod folder by UUID in behavior_packs or resource_packs folders.
-    # This may need to be customized depending on your server setup.
-    search_paths = [
-        os.path.join(world_path, "behavior_packs"),
-        os.path.join(world_path, "resource_packs"),
-    ]
-    for base in search_paths:
-        if not os.path.isdir(base):
-            continue
-        for folder in os.listdir(base):
-            folder_path = os.path.join(base, folder)
-            manifest_file = os.path.join(folder_path, "manifest.json")
-            if os.path.isfile(manifest_file):
-                try:
-                    with open(manifest_file, 'r', encoding='utf-8') as f:
-                        manifest = json.load(f)
-                        if 'header' in manifest and 'uuid' in manifest['header']:
-                            if manifest['header']['uuid'] == uuid:
-                                return manifest_file, manifest
-                except Exception:
-                    pass
-    return None, None
-
+def save_packs_json(world_path, filename, packs):
+    json_path = os.path.join(world_path, filename)
+    with open(json_path, 'w', encoding='utf-8') as f:
+        json.dump(packs, f, indent=2)
+    print(f"Wrote {len(packs)} packs to {json_path}")
 
 class ModManager:
-    def __init__(self, stdscr, world_path):
-        self.stdscr = stdscr
+    def __init__(self, world_path):
         self.world_path = world_path
-        self.behavior_packs = load_packs_json(world_path, BEHAVIOR_PACKS_JSON)
-        self.resource_packs = load_packs_json(world_path, RESOURCE_PACKS_JSON)
-        self.mode = 'behavior'  # or 'resource'
-        self.mods = self.behavior_packs  # start with behavior packs
-        self.selected = 0
-        self.status_msg = ""
-        self.unsaved_changes = False
 
-    def draw(self):
-        self.stdscr.clear()
-        height, width = self.stdscr.getmaxyx()
-        title = f"Mod Manager - World: {os.path.basename(self.world_path)} - Mode: {self.mode.upper()} Packs"
-        self.stdscr.addstr(0, 0, title[:width], curses.A_BOLD)
-
-        if not self.mods:
-            self.stdscr.addstr(2, 0, "(No mods found)", curses.A_DIM)
-        else:
-            for idx, mod in enumerate(self.mods):
-                name = mod.get('header', {}).get('name', '') if 'header' in mod else mod.get('name', '')
-                if not name or name.lower() == "pack.name":
-                    # fallback to UUID
-                    name = mod.get('name', '') or mod.get('uuid', 'Unknown')
-                uuid = mod.get('header', {}).get('uuid', '') if 'header' in mod else mod.get('uuid', '')
-                if not uuid:
-                    uuid = mod.get('uuid', '')
-                line = f"{idx + 1}. {name} (UUID: {uuid[:8]})"
-                if idx == self.selected:
-                    self.stdscr.addstr(idx + 2, 0, "> " + line[:width - 2], curses.A_REVERSE)
-                else:
-                    self.stdscr.addstr(idx + 2, 0, "  " + line[:width - 2])
-
-        # Status bar / help
-        help_line = "↑/↓:Select  u/d:Move Up/Down  v:View Manifest  x:Delete  s:Save  m:Switch Mode  q:Quit"
-        self.stdscr.addstr(height - 2, 0, help_line[:width], curses.A_DIM)
-
-        if self.status_msg:
-            self.stdscr.addstr(height - 1, 0, self.status_msg[:width], curses.A_BOLD)
-        else:
-            unsaved = "Unsaved changes!" if self.unsaved_changes else "All changes saved."
-            self.stdscr.addstr(height - 1, 0, unsaved[:width], curses.A_DIM)
-
-        self.stdscr.refresh()
-
-    def move_mod(self, direction):
-        idx = self.selected
-        if direction == 'up' and idx > 0:
-            self.mods[idx], self.mods[idx - 1] = self.mods[idx - 1], self.mods[idx]
-            self.selected -= 1
-            self.unsaved_changes = True
-            self.status_msg = "Moved up"
-        elif direction == 'down' and idx < len(self.mods) - 1:
-            self.mods[idx], self.mods[idx + 1] = self.mods[idx + 1], self.mods[idx]
-            self.selected += 1
-            self.unsaved_changes = True
-            self.status_msg = "Moved down"
-        else:
-            self.status_msg = "Cannot move further"
-
-    def view_manifest(self):
-        mod = self.mods[self.selected]
-        uuid = mod.get('header', {}).get('uuid', '') if 'header' in mod else mod.get('uuid', '')
-        manifest_path, manifest = get_mod_manifest_path(uuid, self.world_path)
-        if not manifest_path:
-            self.popup(f"Manifest not found for UUID:\n{uuid}")
-            return
-        name = manifest.get('header', {}).get('name', 'Unknown')
-        version = manifest.get('header', {}).get('version', [])
-        description = manifest.get('header', {}).get('description', '')
-        lines = [
-            f"Manifest info:",
-            f"Path: {manifest_path}",
-            f"Name: {name}",
-            f"Version: {'.'.join(map(str, version)) if version else 'N/A'}",
-            f"Description: {description}",
-            "",
-            "Press any key to return..."
+        self.behavior_packs = [
+            mod for mod in load_packs_json(world_path, BEHAVIOR_PACKS_JSON)
+            if not is_excluded_pack(mod.get('name', '')) and not is_excluded_pack(mod.get('folder', ''))
         ]
-        self.popup("\n".join(lines))
+        self.resource_packs = [
+            mod for mod in load_packs_json(world_path, RESOURCE_PACKS_JSON)
+            if not is_excluded_pack(mod.get('name', '')) and not is_excluded_pack(mod.get('folder', ''))
+        ]
 
-    def delete_mod(self):
-        mod = self.mods[self.selected]
-        name = mod.get('header', {}).get('name', 'Unknown') if 'header' in mod else mod.get('name', 'Unknown')
-        confirm = self.prompt(f"Delete mod '{name}'? (y/n): ")
-        if confirm.lower() == 'y':
-            self.mods.pop(self.selected)
-            if self.selected >= len(self.mods):
-                self.selected = len(self.mods) - 1
-            self.unsaved_changes = True
-            self.status_msg = f"Deleted mod '{name}'."
-        else:
-            self.status_msg = "Delete cancelled."
+    def list_packs(self, pack_type="behavior"):
+        packs = self.behavior_packs if pack_type == "behavior" else self.resource_packs
+        print(f"\n{'Behavior' if pack_type == 'behavior' else 'Resource'} Packs:")
+        for idx, pack in enumerate(packs, 1):
+            name = pack.get("name") or pack.get("folder") or pack.get("pack_id")
+            print(f"{idx}. {name}")
 
-    def prompt(self, prompt_str):
-        curses.echo()
-        self.stdscr.addstr(curses.LINES - 1, 0, " " * (curses.COLS - 1))
-        self.stdscr.addstr(curses.LINES - 1, 0, prompt_str)
-        self.stdscr.refresh()
-        response = self.stdscr.getstr(curses.LINES - 1, len(prompt_str), 60).decode('utf-8')
-        curses.noecho()
-        return response
+    def move_pack(self, pack_type, old_index, new_index):
+        packs = self.behavior_packs if pack_type == "behavior" else self.resource_packs
+        pack = packs.pop(old_index)
+        packs.insert(new_index, pack)
 
-    def popup(self, message):
-        h, w = self.stdscr.getmaxyx()
-        win_h = min(10, h - 4)
-        win_w = min(60, w - 4)
-        win = curses.newwin(win_h, win_w, (h - win_h) // 2, (w - win_w) // 2)
-        win.border()
-        lines = message.split('\n')
-        for i, line in enumerate(lines[:win_h - 2]):
-            win.addstr(1 + i, 1, line[:win_w - 2])
-        win.addstr(win_h - 2, 1, "Press any key...")
-        win.refresh()
-        win.getch()
-        del win
+    def remove_pack(self, pack_type, index):
+        packs = self.behavior_packs if pack_type == "behavior" else self.resource_packs
+        packs.pop(index)
 
     def save(self):
-        # Save either behavior or resource packs depending on mode
-        filename = BEHAVIOR_PACKS_JSON if self.mode == 'behavior' else RESOURCE_PACKS_JSON
-        save_packs_json(self.world_path, filename, self.mods)
-        self.unsaved_changes = False
-        self.status_msg = f"Saved {filename}."
+        save_packs_json(self.world_path, BEHAVIOR_PACKS_JSON, self.behavior_packs)
+        save_packs_json(self.world_path, RESOURCE_PACKS_JSON, self.resource_packs)
 
-    def switch_mode(self):
-        if self.unsaved_changes:
-            confirm = self.prompt("Unsaved changes. Save before switching? (y/n): ")
-            if confirm.lower() == 'y':
-                self.save()
-        if self.mode == 'behavior':
-            self.mode = 'resource'
-            self.mods = self.resource_packs
-        else:
-            self.mode = 'behavior'
-            self.mods = self.behavior_packs
-        self.selected = 0
-        self.status_msg = f"Switched to {self.mode} packs."
+def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="Bedrock Mod Manager (excluding vanilla/experimental)")
+    parser.add_argument("world_path", help="Path to the Minecraft world folder")
+    args = parser.parse_args()
 
-    def run(self):
-        self.stdscr.keypad(True)
-        curses.curs_set(0)
-        while True:
-            self.draw()
-            key = self.stdscr.getch()
+    mgr = ModManager(args.world_path)
 
-            if key in (curses.KEY_UP, ord('k')):
-                if self.selected > 0:
-                    self.selected -= 1
-                    self.status_msg = ""
-            elif key in (curses.KEY_DOWN, ord('j')):
-                if self.selected < len(self.mods) - 1:
-                    self.selected += 1
-                    self.status_msg = ""
-            elif key == ord('u'):
-                self.move_mod('up')
-            elif key == ord('d'):
-                self.move_mod('down')
-            elif key == ord('v'):
-                if self.mods:
-                    self.view_manifest()
-            elif key == ord('x'):
-                if self.mods:
-                    self.delete_mod()
-            elif key == ord('s'):
-                self.save()
-            elif key == ord('m'):
-                self.switch_mode()
-            elif key == ord('q'):
-                if self.unsaved_changes:
-                    confirm = self.prompt("Unsaved changes. Quit without saving? (y/n): ")
-                    if confirm.lower() != 'y':
-                        continue
-                break
-
-
-def main(stdscr):
-    worlds = list_worlds()
-    if not worlds:
-        print("No worlds found in the worlds folder.")
-        return
-    print("Select a world:")
-    for i, w in enumerate(worlds):
-        print(f"{i + 1}. {w}")
     while True:
-        choice = input("Enter world number: ").strip()
-        if choice.isdigit() and 1 <= int(choice) <= len(worlds):
-            world = worlds[int(choice) - 1]
+        print("\n--- Bedrock Mod Manager ---")
+        mgr.list_packs("behavior")
+        mgr.list_packs("resource")
+        print("\nOptions: [m]ove [r]emove [s]ave [q]uit")
+        choice = input("Enter option: ").lower()
+        if choice == "m":
+            t = input("Type ([b]ehavior/[r]esource): ").lower()
+            pack_type = "behavior" if t == "b" else "resource"
+            mgr.list_packs(pack_type)
+            old = int(input("Current index (1-based): ")) - 1
+            new = int(input("New index (1-based): ")) - 1
+            mgr.move_pack(pack_type, old, new)
+        elif choice == "r":
+            t = input("Type ([b]ehavior/[r]esource): ").lower()
+            pack_type = "behavior" if t == "b" else "resource"
+            mgr.list_packs(pack_type)
+            idx = int(input("Index to remove (1-based): ")) - 1
+            mgr.remove_pack(pack_type, idx)
+        elif choice == "s":
+            mgr.save()
+            print("Mod order saved.")
+        elif choice == "q":
             break
-        else:
-            print("Invalid choice. Try again.")
-    world_path = os.path.join(WORLDS_DIR, world)
-    curses.wrapper(lambda stdscr: ModManager(stdscr, world_path).run())
-
 
 if __name__ == "__main__":
-    main(None)
+    main()
