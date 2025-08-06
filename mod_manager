@@ -16,6 +16,7 @@ except ImportError:
         print("Cannot continue without 'curses'. Exiting.")
     sys.exit(1)
 
+#CHANGE TO YOUR WORLDS DIRECTORY!
 
 WORLDS_DIR = "./worlds"  # Change this path to your Minecraft worlds folder
 BEHAVIOR_PACKS_JSON = "world_behavior_packs.json"
